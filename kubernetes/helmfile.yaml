@@ -1,0 +1,16 @@
+repositories:
+  - name: kedacore
+    url: https://kedacore.github.io/charts
+
+releases:
+  - name: keda
+    namespace: keda
+    chart: kedacore/keda
+    values:
+      - image:
+          keda:
+            repository: ghcr.io/jmcarbo/keda
+            tag: main
+          metricsApiServer:
+            repository: ghcr.io/jmcarbo/keda-metrics-apiserver
+            tag: main
