@@ -2,6 +2,7 @@
 FROM golang:1.15.6 as builder
 
 ARG BUILD_VERSION
+ARG TARGETARCH
 
 WORKDIR /workspace
 
@@ -26,7 +27,7 @@ COPY pkg/ pkg/
 COPY .git/ .git/
 
 # Build
-RUN VERSION=${BUILD_VERSION} make manager-dockerfile
+RUN VERSION=${BUILD_VERSION} ARCH=${TARGETARCH} make manager-dockerfile
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
