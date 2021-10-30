@@ -32,6 +32,7 @@ type cronMetadata struct {
 	end             string
 	timezone        string
 	desiredReplicas int64
+	scalerIndex     int
 }
 
 var cronLog = logf.Log.WithName("cron_scaler")
@@ -73,15 +74,27 @@ func parseCronMetadata(config *ScalerConfig) (*cronMetadata, error) {
 	} else {
 		return nil, fmt.Errorf("no timezone specified. %s", config.TriggerMetadata)
 	}
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	if val, ok := config.TriggerMetadata["start"]; ok && val != "" {
+		_, err := parser.Parse(val)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing start schedule: %s", err)
+		}
 		meta.start = val
 	} else {
 		return nil, fmt.Errorf("no start schedule specified. %s", config.TriggerMetadata)
 	}
 	if val, ok := config.TriggerMetadata["end"]; ok && val != "" {
+		_, err := parser.Parse(val)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing end schedule: %s", err)
+		}
 		meta.end = val
 	} else {
 		return nil, fmt.Errorf("no end schedule specified. %s", config.TriggerMetadata)
+	}
+	if meta.start == meta.end {
+		return nil, fmt.Errorf("error parsing schedule. %s: start and end can not have exactly same time input", config.TriggerMetadata)
 	}
 	if val, ok := config.TriggerMetadata["desiredReplicas"]; ok && val != "" {
 		metadataDesiredReplicas, err := strconv.Atoi(val)
@@ -93,7 +106,7 @@ func parseCronMetadata(config *ScalerConfig) (*cronMetadata, error) {
 	} else {
 		return nil, fmt.Errorf("no DesiredReplicas specified. %s", config.TriggerMetadata)
 	}
-
+	meta.scalerIndex = config.ScalerIndex
 	return &meta, nil
 }
 
@@ -126,7 +139,7 @@ func (s *cronScaler) IsActive(ctx context.Context) (bool, error) {
 	}
 }
 
-func (s *cronScaler) Close() error {
+func (s *cronScaler) Close(context.Context) error {
 	return nil
 }
 
@@ -139,12 +152,12 @@ func parseCronTimeFormat(s string) string {
 }
 
 // GetMetricSpecForScaling returns the metric spec for the HPA
-func (s *cronScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *cronScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	specReplicas := 1
 	targetMetricValue := resource.NewQuantity(int64(specReplicas), resource.DecimalSI)
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s-%s", "cron", s.metadata.timezone, parseCronTimeFormat(s.metadata.start), parseCronTimeFormat(s.metadata.end))),
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s-%s", "cron", s.metadata.timezone, parseCronTimeFormat(s.metadata.start), parseCronTimeFormat(s.metadata.end)))),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,

@@ -5,6 +5,8 @@
 ## History
 
 - [Unreleased](#unreleased)
+- [v2.4.0](#v240)
+- [v2.3.0](#v230)
 - [v2.2.0](#v220)
 - [v2.1.0](#v210)
 - [v2.0.0](#v200)
@@ -20,19 +22,112 @@
 
 ### New
 
-- TODO ([#XXX](https://github.com/kedacore/keda/pull/XXXX))
+- ScaledJob: introduce MultipleScalersCalculation ([#2016](https://github.com/kedacore/keda/pull/2016))
+- Add Graphite Scaler ([#1628](https://github.com/kedacore/keda/pull/2092))
+- Add Cassandra Scaler ([#2211](https://github.com/kedacore/keda/pull/2211))
 
 ### Improvements
 
-- TODO ([#XXX](https://github.com/kedacore/keda/pull/XXXX))
+- Improve validation in Cron scaler in case start & end input is same.([#2032](https://github.com/kedacore/keda/pull/2032))
+- Improve the cron validation in Cron Scaler ([#2038](https://github.com/kedacore/keda/pull/2038))
+- Add Bearer auth for Metrics API scaler ([#2028](https://github.com/kedacore/keda/pull/2028))
+- Anonymize the host in case of HTTP failure (RabbitMQ Scaler) ([#2041](https://github.com/kedacore/keda/pull/2041))
+- Escape `queueName` and `vhostName` in RabbitMQ Scaler before use them in query string (bug fix) ([#2055](https://github.com/kedacore/keda/pull/2055))
+- TriggerAuthentication/Vault: add support for HashiCorp Vault namespace (Vault Enterprise) ([#2085](https://github.com/kedacore/keda/pull/2085))
+- Add custom http timeout in RabbitMQ Scaler ([#2086](https://github.com/kedacore/keda/pull/2086))
+- Artemis Scaler parses out broker config parameters in case `restAPITemplate` is given ([#2104](https://github.com/kedacore/keda/pull/2104))
+- Add support to get connection data from Trigger Authorization in MongoDB Scaler ([#2115](https://github.com/kedacore/keda/pull/2115))
+- Add support to get connection data from Trigger Authorization in MySQL Scaler ([#2113](https://github.com/kedacore/keda/pull/2113))
+- Add support to get connection data from Trigger Authorization in MSSQL Scaler ([#2112](https://github.com/kedacore/keda/pull/2112))
+- Add support to get connection data from Trigger Authorization in PostgreSQL Scaler ([#2114](https://github.com/kedacore/keda/pull/2114))
+- Add support to provide the metric name in Azure Log Analytics Scaler ([#2106](https://github.com/kedacore/keda/pull/2106))
+- MySQL Scaler: don't expose connection string in `metricName` ([#2171](https://github.com/kedacore/keda/pull/2171))
+- Provide support for configuring authentication through TriggerAuthentication for Stan scaler ([#2167](https://github.com/kedacore/keda/pull/2167))
+- Add `pageSize` (using regex) in RabbitMQ Scaler ([#2162](https://github.com/kedacore/keda/pull/2162))
+- Add `unsafeSsl` parameter in InfluxDB scaler ([#2157](https://github.com/kedacore/keda/pull/2157))
+- Improve metric name creation to be unique using scaler index inside the scaler ([#2161](https://github.com/kedacore/keda/pull/2161))
+- Improve error message if `IdleReplicaCount` are equal to `MinReplicaCount` to be the same as the check ([#2212](https://github.com/kedacore/keda/pull/2212))
 
 ### Breaking Changes
 
-- TODO ([#XXX](https://github.com/kedacore/keda/issues/XXX))
+- TODO ([#XXX](https://github.com/kedacore/keda/pull/XXX))
 
 ### Other
 
-- TODO ([#XXX](https://github.com/kedacore/keda/issues/XXX))
+- Ensure that `context.Context` values are passed down the stack from all scaler gRPC handler implementation to scaler implementation code ([#2202](https://github.com/kedacore/keda/pull/2202))
+- Migrate to Kubebuilder v3 ([#2082](https://github.com/kedacore/keda/pull/2082))
+    - API path has been changed: `github.com/kedacore/keda/v2/api/v1alpha1` -> `github.com/kedacore/keda/v2/apis/keda/v1alpha1`
+- Use Patch to set FallbackCondition on ScaledObject.Status ([#2037](https://github.com/kedacore/keda/pull/2037))
+- Bump Golang to 1.16.9 ([#2065](https://github.com/kedacore/keda/pull/2065)|[#2186](https://github.com/kedacore/keda/pull/2186))
+- Add Makefile mockgen targets ([#2090](https://github.com/kedacore/keda/issues/2090))
+- Prometheus scaler: omit `serverAddress` from generated metric name ([#2099](https://github.com/kedacore/keda/pull/2099))
+- Add Makefile mockgen targets ([#2090](https://github.com/kedacore/keda/issues/2090)|[#2184](https://github.com/kedacore/keda/pull/2184))
+- Drop support to `ValueMetricType` using cpu_memory_scaler ([#2218](https://github.com/kedacore/keda/issues/2218))
+
+## v2.4.0
+
+### New
+
+- Add Solace PubSub+ Event Broker scaler ([#1945](https://github.com/kedacore/keda/pull/1945))
+- Add Selenium Grid scaler ([#1971](https://github.com/kedacore/keda/pull/1971))
+- Add Kubernetes Workload scaler ([#2010](https://github.com/kedacore/keda/pull/2010))
+- Introduce fallback functionality ([#1872](https://github.com/kedacore/keda/issues/1872))
+- Introduce Idle Replica Mode ([#1958](https://github.com/kedacore/keda/pull/1958))
+- ScaledJob: Support pod conditions for pending job count calculation ([#1970](https://github.com/kedacore/keda/pull/1970)|[#2009](https://github.com/kedacore/keda/pull/2009))
+
+### Improvements
+
+- Optimize Kafka scaler by fetching all topic offsets using a single HTTP request ([#1956](https://github.com/kedacore/keda/pull/1956))
+- Adding ability to specify Kafka Broker Version ([#1866](https://github.com/kedacore/keda/pull/1866))
+- Support custom metric name in RabbitMQ scaler ([#1976](https://github.com/kedacore/keda/pull/1976))
+- Support using regex to select the queues in RabbitMQ scaler ([#1957](https://github.com/kedacore/keda/pull/1957))
+- Extend Azure Monitor scaler to support custom metrics ([#1883](https://github.com/kedacore/keda/pull/1883))
+- Support non-public cloud environments in the Azure Service Bus scaler ([#1907](https://github.com/kedacore/keda/pull/1907))
+- Support non-public cloud environments in the Azure Storage Queue and Azure Storage Blob scalers ([#1863](https://github.com/kedacore/keda/pull/1863))
+- Adjusts InfluxDB scaler to support queries that return integers in addition to those that return floats ([#1977](https://github.com/kedacore/keda/pull/1977))
+- Allow InfluxDB `authToken`, `serverURL`, and `organizationName` to be sourced from `(Cluster)TriggerAuthentication` ([#1904](https://github.com/kedacore/keda/pull/1904))
+- IBM MQ scaler password handling fix ([#1939](https://github.com/kedacore/keda/pull/1939))
+- Metrics APIServer: Add ratelimiting parameters to override client ([#1944](https://github.com/kedacore/keda/pull/1944))
+- Fix READY and ACTIVE fields of ScaledJob to show status when we run `kubectl get sj` ([#1855](https://github.com/kedacore/keda/pull/1855))
+- Show HashiCorp Vault Address when using `kubectl get ta` or `kubectl get cta` ([#1862](https://github.com/kedacore/keda/pull/1862))
+- Don't panic when HashiCorp Vault path doesn't exist ([#1864](https://github.com/kedacore/keda/pull/1864))
+
+### Breaking Changes
+
+- Fix `keda-system-auth-delegator` ClusterRoleBinding name ([#1616](https://github.com/kedacore/keda/pull/1616). Upgrading may leave a stray ClusterRoleBinding with the old name `keda:system:auth-delegator` behind.
+
+### Other
+
+- Use `scaled[object/job].keda.sh/` prefix for KEDA related labels ([#2008](https://github.com/kedacore/keda/pull/2008))
+
+## v2.3.0
+
+### New
+
+- Add Azure Pipelines Scaler ([#1706](https://github.com/kedacore/keda/pull/1706))
+- Add OpenStack Metrics Scaler ([#1382](https://github.com/kedacore/keda/issues/1382))
+- Added basic, tls and bearer authentication support to the Prometheus scaler [#1559](https://github.com/kedacore/keda/issues/1559)
+- Add header Origin to Apache Artemis scaler [#1796](https://github.com/kedacore/keda/pull/1796)
+
+### Improvements
+
+- Azure Service Bus Scaler: Namespace from `connectionString` parameter is added to `metricName` due to uniqueness violation for clusters having more than one queue with the same name  ([#1755](https://github.com/kedacore/keda/issues/1755))
+- Remove app.kubernetes.io/version label from label selectors ([#1696](https://github.com/kedacore/keda/pull/1696))
+- Apache Kafka Scaler: Add `allowIdleConsumers` to the list of trigger parameters ([#1684](https://github.com/kedacore/keda/pull/1684))
+- Fixed goroutine leaks in usage of timers ([#1704](https://github.com/kedacore/keda/pull/1704) | [#1739](https://github.com/kedacore/keda/pull/1739))
+- Setting timeouts in the HTTP client used by the IBM MQ scaler ([#1758](https://github.com/kedacore/keda/pull/1758))
+- Fix cleanup of removed triggers ([#1768](https://github.com/kedacore/keda/pull/1768))
+- Eventhub Scaler: Add trigger parameter `checkpointStrategy` to support more language-specific checkpoints ([#1621](https://github.com/kedacore/keda/pull/1621))
+- Fix Azure Blob scaler when using multiple triggers with the same `blobContainerName` and added a optional `metricName` field ([#1816](https://github.com/kedacore/keda/pull/1816))
+
+### Breaking Changes
+
+- None.
+
+### Other
+
+- Adding OpenStack Swift scaler end-to-end tests ([#1522](https://github.com/kedacore/keda/pull/1522))
+- Pass deepCopy objects to the polling goroutines ([#1812](https://github.com/kedacore/keda/pull/1812))
 
 ## v2.2.0
 

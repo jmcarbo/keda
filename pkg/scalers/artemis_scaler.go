@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,8 @@ type artemisMetadata struct {
 	password           string
 	restAPITemplate    string
 	queueLength        int
+	corsHeader         string
+	scalerIndex        int
 }
 
 //revive:enable:var-naming
@@ -48,6 +51,7 @@ const (
 	artemisMetricType         = "External"
 	defaultArtemisQueueLength = 10
 	defaultRestAPITemplate    = "http://<<managementEndpoint>>/console/jolokia/read/org.apache.activemq.artemis:broker=\"<<brokerName>>\",component=addresses,address=\"<<brokerAddress>>\",subcomponent=queues,routing-type=\"anycast\",queue=\"<<queueName>>\"/MessageCount"
+	defaultCorsHeader         = "http://%s"
 )
 
 var artemisLog = logf.Log.WithName("artemis_queue_scaler")
@@ -77,29 +81,38 @@ func parseArtemisMetadata(config *ScalerConfig) (*artemisMetadata, error) {
 
 	if val, ok := config.TriggerMetadata["restApiTemplate"]; ok && val != "" {
 		meta.restAPITemplate = config.TriggerMetadata["restApiTemplate"]
+		var err error
+		if meta, err = getAPIParameters(meta); err != nil {
+			return nil, fmt.Errorf("can't parse restApiTemplate : %s ", err)
+		}
 	} else {
 		meta.restAPITemplate = defaultRestAPITemplate
+		if config.TriggerMetadata["managementEndpoint"] == "" {
+			return nil, errors.New("no management endpoint given")
+		}
+		meta.managementEndpoint = config.TriggerMetadata["managementEndpoint"]
+
+		if config.TriggerMetadata["queueName"] == "" {
+			return nil, errors.New("no queue name given")
+		}
+		meta.queueName = config.TriggerMetadata["queueName"]
+
+		if config.TriggerMetadata["brokerName"] == "" {
+			return nil, errors.New("no broker name given")
+		}
+		meta.brokerName = config.TriggerMetadata["brokerName"]
+
+		if config.TriggerMetadata["brokerAddress"] == "" {
+			return nil, errors.New("no broker address given")
+		}
+		meta.brokerAddress = config.TriggerMetadata["brokerAddress"]
 	}
 
-	if config.TriggerMetadata["managementEndpoint"] == "" {
-		return nil, errors.New("no management endpoint given")
+	if val, ok := config.TriggerMetadata["corsHeader"]; ok && val != "" {
+		meta.corsHeader = config.TriggerMetadata["corsHeader"]
+	} else {
+		meta.corsHeader = fmt.Sprintf(defaultCorsHeader, meta.managementEndpoint)
 	}
-	meta.managementEndpoint = config.TriggerMetadata["managementEndpoint"]
-
-	if config.TriggerMetadata["queueName"] == "" {
-		return nil, errors.New("no queue name given")
-	}
-	meta.queueName = config.TriggerMetadata["queueName"]
-
-	if config.TriggerMetadata["brokerName"] == "" {
-		return nil, errors.New("no broker name given")
-	}
-	meta.brokerName = config.TriggerMetadata["brokerName"]
-
-	if config.TriggerMetadata["brokerAddress"] == "" {
-		return nil, errors.New("no broker address given")
-	}
-	meta.brokerAddress = config.TriggerMetadata["brokerAddress"]
 
 	if val, ok := config.TriggerMetadata["queueLength"]; ok {
 		queueLength, err := strconv.Atoi(val)
@@ -141,18 +154,53 @@ func parseArtemisMetadata(config *ScalerConfig) (*artemisMetadata, error) {
 	if meta.password == "" {
 		return nil, fmt.Errorf("password cannot be empty")
 	}
+
+	meta.scalerIndex = config.ScalerIndex
+
 	return &meta, nil
 }
 
 // IsActive determines if we need to scale from zero
 func (s *artemisScaler) IsActive(ctx context.Context) (bool, error) {
-	messages, err := s.getQueueMessageCount()
+	messages, err := s.getQueueMessageCount(ctx)
 	if err != nil {
 		artemisLog.Error(err, "Unable to access the artemis management endpoint", "managementEndpoint", s.metadata.managementEndpoint)
 		return false, err
 	}
 
 	return messages > 0, nil
+}
+
+// getAPIParameters parse restAPITemplate to provide managementEndpoint , brokerName, brokerAddress, queueName
+func getAPIParameters(meta artemisMetadata) (artemisMetadata, error) {
+	u, err := url.ParseRequestURI(meta.restAPITemplate)
+	if err != nil {
+		return meta, fmt.Errorf("unable to parse the artemis restAPITemplate: %s", err)
+	}
+	meta.managementEndpoint = u.Host
+	splitURL := strings.Split(strings.Split(u.RawPath, ":")[1], "/")[0] // This returns : broker="<<brokerName>>",component=addresses,address="<<brokerAddress>>",subcomponent=queues,routing-type="anycast",queue="<<queueName>>"
+	replacer := strings.NewReplacer(",", "&", "\"\"", "")
+	v, err := url.ParseQuery(replacer.Replace(splitURL)) // This returns a map with key: string types and element type [] string. : map[address:["<<brokerAddress>>"] broker:["<<brokerName>>"] component:[addresses] queue:["<<queueName>>"] routing-type:["anycast"] subcomponent:[queues]]
+	if err != nil {
+		return meta, fmt.Errorf("unable to parse the artemis restAPITemplate: %s", err)
+	}
+
+	if len(v["address"][0]) == 0 {
+		return meta, errors.New("no brokerAddress given")
+	}
+	meta.brokerAddress = v["address"][0]
+
+	if len(v["queue"][0]) == 0 {
+		return meta, errors.New("no queueName is given")
+	}
+	meta.queueName = v["queue"][0]
+
+	if len(v["broker"][0]) == 0 {
+		return meta, fmt.Errorf("no brokerName given: %s", meta.restAPITemplate)
+	}
+	meta.brokerName = v["broker"][0]
+
+	return meta, nil
 }
 
 func (s *artemisScaler) getMonitoringEndpoint() string {
@@ -166,16 +214,17 @@ func (s *artemisScaler) getMonitoringEndpoint() string {
 	return monitoringEndpoint
 }
 
-func (s *artemisScaler) getQueueMessageCount() (int, error) {
+func (s *artemisScaler) getQueueMessageCount(ctx context.Context) (int, error) {
 	var monitoringInfo *artemisMonitoring
 	messageCount := 0
 
 	client := s.httpClient
 	url := s.getMonitoringEndpoint()
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 
 	req.SetBasicAuth(s.metadata.username, s.metadata.password)
+	req.Header.Set("Origin", s.metadata.corsHeader)
 
 	if err != nil {
 		return -1, err
@@ -193,7 +242,7 @@ func (s *artemisScaler) getQueueMessageCount() (int, error) {
 	if resp.StatusCode == 200 && monitoringInfo.Status == 200 {
 		messageCount = monitoringInfo.MsgCount
 	} else {
-		return -1, fmt.Errorf("artemis management endpoint response error code : %d", resp.StatusCode)
+		return -1, fmt.Errorf("artemis management endpoint response error code : %d %d", resp.StatusCode, monitoringInfo.Status)
 	}
 
 	artemisLog.V(1).Info(fmt.Sprintf("Artemis scaler: Providing metrics based on current queue length %d queue length limit %d", messageCount, s.metadata.queueLength))
@@ -201,11 +250,11 @@ func (s *artemisScaler) getQueueMessageCount() (int, error) {
 	return messageCount, nil
 }
 
-func (s *artemisScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *artemisScaler) GetMetricSpecForScaling(ctx context.Context) []v2beta2.MetricSpec {
 	targetMetricValue := resource.NewQuantity(int64(s.metadata.queueLength), resource.DecimalSI)
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", "artemis", s.metadata.brokerName, s.metadata.queueName)),
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", "artemis", s.metadata.brokerName, s.metadata.queueName))),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,
@@ -218,7 +267,7 @@ func (s *artemisScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
 
 // GetMetrics returns value for a supported metric and an error if there is a problem getting the metric
 func (s *artemisScaler) GetMetrics(ctx context.Context, metricName string, metricSelector labels.Selector) ([]external_metrics.ExternalMetricValue, error) {
-	messages, err := s.getQueueMessageCount()
+	messages, err := s.getQueueMessageCount(ctx)
 
 	if err != nil {
 		artemisLog.Error(err, "Unable to access the artemis management endpoint", "managementEndpoint", s.metadata.managementEndpoint)
@@ -235,6 +284,6 @@ func (s *artemisScaler) GetMetrics(ctx context.Context, metricName string, metri
 }
 
 // Nothing to close here.
-func (s *artemisScaler) Close() error {
+func (s *artemisScaler) Close(context.Context) error {
 	return nil
 }

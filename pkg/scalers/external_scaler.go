@@ -33,6 +33,7 @@ type externalScalerMetadata struct {
 	scalerAddress    string
 	tlsCertFile      string
 	originalMetadata map[string]string
+	scalerIndex      int
 }
 
 type connectionGroup struct {
@@ -111,7 +112,7 @@ func parseExternalScalerMetadata(config *ScalerConfig) (externalScalerMetadata, 
 			meta.originalMetadata[key] = value
 		}
 	}
-
+	meta.scalerIndex = config.ScalerIndex
 	return meta, nil
 }
 
@@ -132,12 +133,12 @@ func (s *externalScaler) IsActive(ctx context.Context) (bool, error) {
 	return response.Result, nil
 }
 
-func (s *externalScaler) Close() error {
+func (s *externalScaler) Close(context.Context) error {
 	return nil
 }
 
 // GetMetricSpecForScaling returns the metric spec for the HPA
-func (s *externalScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *externalScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	var result []v2beta2.MetricSpec
 
 	grpcClient, done, err := getClientForConnectionPool(s.metadata)
@@ -159,7 +160,7 @@ func (s *externalScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
 
 		externalMetric := &v2beta2.ExternalMetricSource{
 			Metric: v2beta2.MetricIdentifier{
-				Name: spec.MetricName,
+				Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, spec.MetricName),
 			},
 			Target: v2beta2.MetricTarget{
 				Type:         v2beta2.AverageValueMetricType,
@@ -231,23 +232,28 @@ func (s *externalPushScaler) Run(ctx context.Context, active chan<- bool) {
 
 	// retry on error from runWithLog() starting by 2 sec backing off * 2 with a max of 1 minute
 	retryDuration := time.Second * 2
-	retryBackoff := func() <-chan time.Time {
-		ch := time.After(retryDuration)
+	// the caller of this function needs to ensure that they call Stop() on the resulting
+	// timer, to release background resources.
+	retryBackoff := func() *time.Timer {
+		tmr := time.NewTimer(retryDuration)
 		retryDuration *= time.Second * 2
 		if retryDuration > time.Minute*1 {
 			retryDuration = time.Minute * 1
 		}
-		return ch
+		return tmr
 	}
 
 	// start the first run without delay
 	runWithLog()
 
 	for {
+		backoffTimer := retryBackoff()
 		select {
 		case <-ctx.Done():
+			backoffTimer.Stop()
 			return
-		case <-retryBackoff():
+		case <-backoffTimer.C:
+			backoffTimer.Stop()
 			runWithLog()
 		}
 	}

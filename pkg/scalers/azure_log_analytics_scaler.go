@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KEDA Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package scalers
 
 import (
@@ -22,7 +38,7 @@ import (
 	"k8s.io/metrics/pkg/apis/external_metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	kedav1alpha1 "github.com/kedacore/keda/v2/api/v1alpha1"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -48,6 +64,8 @@ type azureLogAnalyticsMetadata struct {
 	podIdentity  string
 	query        string
 	threshold    int64
+	metricName   string // Custom metric name for trigger
+	scalerIndex  int
 }
 
 type sessionCache struct {
@@ -161,6 +179,15 @@ func parseAzureLogAnalyticsMetadata(config *ScalerConfig) (*azureLogAnalyticsMet
 	}
 	meta.threshold = threshold
 
+	// Resolve metricName
+	if val, ok := config.TriggerMetadata["metricName"]; ok {
+		meta.metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-log-analytics", val))
+	} else {
+		meta.metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-log-analytics", meta.workspaceID))
+	}
+
+	meta.scalerIndex = config.ScalerIndex
+
 	return &meta, nil
 }
 
@@ -179,7 +206,7 @@ func getParameterFromConfig(config *ScalerConfig, parameter string, checkAuthPar
 
 // IsActive determines if we need to scale from zero
 func (s *azureLogAnalyticsScaler) IsActive(ctx context.Context) (bool, error) {
-	err := s.updateCache()
+	err := s.updateCache(ctx)
 
 	if err != nil {
 		return false, fmt.Errorf("failed to execute IsActive function. Scaled object: %s. Namespace: %s. Inner Error: %v", s.name, s.namespace, err)
@@ -188,8 +215,8 @@ func (s *azureLogAnalyticsScaler) IsActive(ctx context.Context) (bool, error) {
 	return s.cache.metricValue > 0, nil
 }
 
-func (s *azureLogAnalyticsScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
-	err := s.updateCache()
+func (s *azureLogAnalyticsScaler) GetMetricSpecForScaling(ctx context.Context) []v2beta2.MetricSpec {
+	err := s.updateCache(ctx)
 
 	if err != nil {
 		logAnalyticsLog.V(1).Info("failed to get metric spec.", "Scaled object", s.name, "Namespace", s.namespace, "Inner Error", err)
@@ -198,7 +225,7 @@ func (s *azureLogAnalyticsScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec
 
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-log-analytics", s.metadata.workspaceID)),
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, s.metadata.metricName),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,
@@ -211,7 +238,7 @@ func (s *azureLogAnalyticsScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec
 
 // GetMetrics returns value for a supported metric and an error if there is a problem getting the metric
 func (s *azureLogAnalyticsScaler) GetMetrics(ctx context.Context, metricName string, metricSelector labels.Selector) ([]external_metrics.ExternalMetricValue, error) {
-	receivedMetric, err := s.getMetricData()
+	receivedMetric, err := s.getMetricData(ctx)
 
 	if err != nil {
 		return []external_metrics.ExternalMetricValue{}, fmt.Errorf("failed to get metrics. Scaled object: %s. Namespace: %s. Inner Error: %v", s.name, s.namespace, err)
@@ -226,13 +253,13 @@ func (s *azureLogAnalyticsScaler) GetMetrics(ctx context.Context, metricName str
 	return append([]external_metrics.ExternalMetricValue{}, metric), nil
 }
 
-func (s *azureLogAnalyticsScaler) Close() error {
+func (s *azureLogAnalyticsScaler) Close(context.Context) error {
 	return nil
 }
 
-func (s *azureLogAnalyticsScaler) updateCache() error {
+func (s *azureLogAnalyticsScaler) updateCache(ctx context.Context) error {
 	if s.cache.metricValue < 0 {
-		receivedMetric, err := s.getMetricData()
+		receivedMetric, err := s.getMetricData(ctx)
 
 		if err != nil {
 			return err
@@ -250,13 +277,13 @@ func (s *azureLogAnalyticsScaler) updateCache() error {
 	return nil
 }
 
-func (s *azureLogAnalyticsScaler) getMetricData() (metricsData, error) {
-	tokenInfo, err := s.getAccessToken()
+func (s *azureLogAnalyticsScaler) getMetricData(ctx context.Context) (metricsData, error) {
+	tokenInfo, err := s.getAccessToken(ctx)
 	if err != nil {
 		return metricsData{}, err
 	}
 
-	metricsInfo, err := s.executeQuery(s.metadata.query, tokenInfo)
+	metricsInfo, err := s.executeQuery(ctx, s.metadata.query, tokenInfo)
 	if err != nil {
 		return metricsData{}, err
 	}
@@ -266,7 +293,7 @@ func (s *azureLogAnalyticsScaler) getMetricData() (metricsData, error) {
 	return metricsInfo, nil
 }
 
-func (s *azureLogAnalyticsScaler) getAccessToken() (tokenData, error) {
+func (s *azureLogAnalyticsScaler) getAccessToken(ctx context.Context) (tokenData, error) {
 	// if there is no token yet or it will be expired in less, that 30 secs
 	currentTimeSec := time.Now().Unix()
 	tokenInfo := tokenData{}
@@ -278,7 +305,7 @@ func (s *azureLogAnalyticsScaler) getAccessToken() (tokenData, error) {
 	}
 
 	if currentTimeSec+30 > tokenInfo.ExpiresOn {
-		newTokenInfo, err := s.refreshAccessToken()
+		newTokenInfo, err := s.refreshAccessToken(ctx)
 		if err != nil {
 			return tokenData{}, err
 		}
@@ -296,17 +323,17 @@ func (s *azureLogAnalyticsScaler) getAccessToken() (tokenData, error) {
 	return tokenInfo, nil
 }
 
-func (s *azureLogAnalyticsScaler) executeQuery(query string, tokenInfo tokenData) (metricsData, error) {
+func (s *azureLogAnalyticsScaler) executeQuery(ctx context.Context, query string, tokenInfo tokenData) (metricsData, error) {
 	queryData := queryResult{}
 	var body []byte
 	var statusCode int
 	var err error
 
-	body, statusCode, err = s.executeLogAnalyticsREST(query, tokenInfo)
+	body, statusCode, err = s.executeLogAnalyticsREST(ctx, query, tokenInfo)
 
 	// Handle expired token
 	if statusCode == 403 || (len(body) > 0 && strings.Contains(string(body), "TokenExpired")) {
-		tokenInfo, err = s.refreshAccessToken()
+		tokenInfo, err = s.refreshAccessToken(ctx)
 		if err != nil {
 			return metricsData{}, err
 		}
@@ -320,7 +347,7 @@ func (s *azureLogAnalyticsScaler) executeQuery(query string, tokenInfo tokenData
 		}
 
 		if err == nil {
-			body, statusCode, err = s.executeLogAnalyticsREST(query, tokenInfo)
+			body, statusCode, err = s.executeLogAnalyticsREST(ctx, query, tokenInfo)
 		} else {
 			return metricsData{}, err
 		}
@@ -404,8 +431,8 @@ func parseTableValueToInt64(value interface{}, dataType string) (int64, error) {
 	return 0, fmt.Errorf("error validating Log Analytics request. Details: value is empty, check your query")
 }
 
-func (s *azureLogAnalyticsScaler) refreshAccessToken() (tokenData, error) {
-	tokenInfo, err := s.getAuthorizationToken()
+func (s *azureLogAnalyticsScaler) refreshAccessToken(ctx context.Context) (tokenData, error) {
+	tokenInfo, err := s.getAuthorizationToken(ctx)
 
 	if err != nil {
 		return tokenData{}, err
@@ -426,16 +453,16 @@ func (s *azureLogAnalyticsScaler) refreshAccessToken() (tokenData, error) {
 	return tokenInfo, nil
 }
 
-func (s *azureLogAnalyticsScaler) getAuthorizationToken() (tokenData, error) {
+func (s *azureLogAnalyticsScaler) getAuthorizationToken(ctx context.Context) (tokenData, error) {
 	var body []byte
 	var statusCode int
 	var err error
 	var tokenInfo tokenData
 
 	if s.metadata.podIdentity == "" {
-		body, statusCode, err = s.executeAADApicall()
+		body, statusCode, err = s.executeAADApicall(ctx)
 	} else {
-		body, statusCode, err = s.executeIMDSApicall()
+		body, statusCode, err = s.executeIMDSApicall(ctx)
 	}
 
 	if err != nil {
@@ -456,7 +483,7 @@ func (s *azureLogAnalyticsScaler) getAuthorizationToken() (tokenData, error) {
 	return tokenData{}, fmt.Errorf("error getting access token. Details: unknown error. HTTP code: %d. Body: %s", statusCode, string(body))
 }
 
-func (s *azureLogAnalyticsScaler) executeLogAnalyticsREST(query string, tokenInfo tokenData) ([]byte, int, error) {
+func (s *azureLogAnalyticsScaler) executeLogAnalyticsREST(ctx context.Context, query string, tokenInfo tokenData) ([]byte, int, error) {
 	m := map[string]interface{}{"query": query}
 
 	jsonBytes, err := json.Marshal(m)
@@ -464,7 +491,7 @@ func (s *azureLogAnalyticsScaler) executeLogAnalyticsREST(query string, tokenInf
 		return nil, 0, fmt.Errorf("can't construct JSON for request to Log Analytics API. Inner Error: %v", err)
 	}
 
-	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf(laQueryEndpoint, s.metadata.workspaceID), bytes.NewBuffer(jsonBytes)) // URL-encoded payload
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf(laQueryEndpoint, s.metadata.workspaceID), bytes.NewBuffer(jsonBytes)) // URL-encoded payload
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't construct HTTP request to Log Analytics API. Inner Error: %v", err)
 	}
@@ -476,7 +503,7 @@ func (s *azureLogAnalyticsScaler) executeLogAnalyticsREST(query string, tokenInf
 	return s.runHTTP(request, "Log Analytics REST api")
 }
 
-func (s *azureLogAnalyticsScaler) executeAADApicall() ([]byte, int, error) {
+func (s *azureLogAnalyticsScaler) executeAADApicall(ctx context.Context) ([]byte, int, error) {
 	data := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {s.metadata.clientID},
@@ -485,7 +512,7 @@ func (s *azureLogAnalyticsScaler) executeAADApicall() ([]byte, int, error) {
 		"client_secret": {s.metadata.clientSecret},
 	}
 
-	request, err := http.NewRequest(http.MethodPost, fmt.Sprintf(aadTokenEndpoint, s.metadata.tenantID), strings.NewReader(data.Encode())) // URL-encoded payload
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf(aadTokenEndpoint, s.metadata.tenantID), strings.NewReader(data.Encode())) // URL-encoded payload
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't construct HTTP request to Azure Active Directory. Inner Error: %v", err)
 	}
@@ -496,8 +523,8 @@ func (s *azureLogAnalyticsScaler) executeAADApicall() ([]byte, int, error) {
 	return s.runHTTP(request, "AAD")
 }
 
-func (s *azureLogAnalyticsScaler) executeIMDSApicall() ([]byte, int, error) {
-	request, err := http.NewRequest(http.MethodGet, miEndpoint, nil)
+func (s *azureLogAnalyticsScaler) executeIMDSApicall(ctx context.Context) ([]byte, int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, miEndpoint, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't construct HTTP request to Azure Instance Metadata service. Inner Error: %v", err)
 	}

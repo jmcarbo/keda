@@ -1,6 +1,7 @@
 package scalers
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -21,6 +22,7 @@ type parseRedisMetadataTestData struct {
 
 type redisMetricIdentifier struct {
 	metadataTestData *parseRedisMetadataTestData
+	scalerIndex      int
 	name             string
 }
 
@@ -51,7 +53,8 @@ var testRedisMetadata = []parseRedisMetadataTestData{
 	{map[string]string{"listName": "mylist", "listLength": "0"}, true, map[string]string{"host": "localhost"}}}
 
 var redisMetricIdentifiers = []redisMetricIdentifier{
-	{&testRedisMetadata[1], "redis-mylist"},
+	{&testRedisMetadata[1], 0, "s0-redis-mylist"},
+	{&testRedisMetadata[1], 1, "s1-redis-mylist"},
 }
 
 func TestRedisParseMetadata(t *testing.T) {
@@ -70,19 +73,19 @@ func TestRedisParseMetadata(t *testing.T) {
 
 func TestRedisGetMetricSpecForScaling(t *testing.T) {
 	for _, testData := range redisMetricIdentifiers {
-		meta, err := parseRedisMetadata(&ScalerConfig{TriggerMetadata: testData.metadataTestData.metadata, ResolvedEnv: testRedisResolvedEnv, AuthParams: testData.metadataTestData.authParams}, parseRedisAddress)
+		meta, err := parseRedisMetadata(&ScalerConfig{TriggerMetadata: testData.metadataTestData.metadata, ResolvedEnv: testRedisResolvedEnv, AuthParams: testData.metadataTestData.authParams, ScalerIndex: testData.scalerIndex}, parseRedisAddress)
 		if err != nil {
 			t.Fatal("Could not parse metadata:", err)
 		}
 		closeFn := func() error { return nil }
-		lengthFn := func() (int64, error) { return -1, nil }
+		lengthFn := func(context.Context) (int64, error) { return -1, nil }
 		mockRedisScaler := redisScaler{
 			meta,
 			closeFn,
 			lengthFn,
 		}
 
-		metricSpec := mockRedisScaler.GetMetricSpecForScaling()
+		metricSpec := mockRedisScaler.GetMetricSpecForScaling(context.Background())
 		metricName := metricSpec[0].External.Metric.Name
 		if metricName != testData.name {
 			t.Error("Wrong External metric source name:", metricName)

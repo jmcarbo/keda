@@ -1,5 +1,21 @@
 package scalers
 
+/*
+Copyright 2021 The KEDA Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 import (
 	"context"
 	"fmt"
@@ -8,6 +24,7 @@ import (
 
 	"github.com/Azure/azure-amqp-common-go/v3/auth"
 	servicebus "github.com/Azure/azure-service-bus-go"
+	az "github.com/Azure/go-autorest/autorest/azure"
 	"github.com/kedacore/keda/v2/pkg/scalers/azure"
 	v2beta2 "k8s.io/api/autoscaling/v2beta2"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -16,7 +33,7 @@ import (
 	"k8s.io/metrics/pkg/apis/external_metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	kedav1alpha1 "github.com/kedacore/keda/v2/api/v1alpha1"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -46,6 +63,8 @@ type azureServiceBusMetadata struct {
 	connection       string
 	entityType       entityType
 	namespace        string
+	endpointSuffix   string
+	scalerIndex      int
 }
 
 // NewAzureServiceBusScaler creates a new AzureServiceBusScaler
@@ -102,6 +121,16 @@ func parseAzureServiceBusMetadata(config *ScalerConfig) (*azureServiceBusMetadat
 		}
 	}
 
+	envSuffixProvider := func(env az.Environment) (string, error) {
+		return env.ServiceBusEndpointSuffix, nil
+	}
+
+	endpointSuffix, err := azure.ParseEndpointSuffix(config.TriggerMetadata, envSuffixProvider)
+	if err != nil {
+		return nil, err
+	}
+	meta.endpointSuffix = endpointSuffix
+
 	if meta.entityType == none {
 		return nil, fmt.Errorf("no service bus entity type set")
 	}
@@ -127,6 +156,8 @@ func parseAzureServiceBusMetadata(config *ScalerConfig) (*azureServiceBusMetadat
 		return nil, fmt.Errorf("azure service bus doesn't support pod identity %s", config.PodIdentity)
 	}
 
+	meta.scalerIndex = config.ScalerIndex
+
 	return &meta, nil
 }
 
@@ -142,22 +173,28 @@ func (s *azureServiceBusScaler) IsActive(ctx context.Context) (bool, error) {
 }
 
 // Close - nothing to close for SB
-func (s *azureServiceBusScaler) Close() error {
+func (s *azureServiceBusScaler) Close(context.Context) error {
 	return nil
 }
 
 // Returns the metric spec to be used by the HPA
-func (s *azureServiceBusScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *azureServiceBusScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	targetLengthQty := resource.NewQuantity(int64(s.metadata.targetLength), resource.DecimalSI)
+	namespace, err := s.getServiceBusNamespace()
+	if err != nil {
+		azureServiceBusLog.Error(err, "error parsing azure service bus metadata", "namespace")
+		return nil
+	}
+
 	metricName := "azure-servicebus"
 	if s.metadata.entityType == queue {
-		metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s", metricName, s.metadata.queueName))
+		metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", metricName, namespace.Name, s.metadata.queueName))
 	} else {
-		metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", metricName, s.metadata.topicName, s.metadata.subscriptionName))
+		metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s-%s", metricName, namespace.Name, s.metadata.topicName, s.metadata.subscriptionName))
 	}
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: metricName,
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, metricName),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,
@@ -192,7 +229,9 @@ type azureTokenProvider struct {
 
 // GetToken implements TokenProvider interface for azureTokenProvider
 func (a azureTokenProvider) GetToken(uri string) (*auth.Token, error) {
-	token, err := azure.GetAzureADPodIdentityToken(a.httpClient, "https://servicebus.azure.net")
+	ctx := context.Background()
+	// Service bus resource id is "https://servicebus.azure.net/" in all cloud environments
+	token, err := azure.GetAzureADPodIdentityToken(ctx, a.httpClient, "https://servicebus.azure.net/")
 	if err != nil {
 		return nil, err
 	}
@@ -207,24 +246,10 @@ func (a azureTokenProvider) GetToken(uri string) (*auth.Token, error) {
 // Returns the length of the queue or subscription
 func (s *azureServiceBusScaler) GetAzureServiceBusLength(ctx context.Context) (int32, error) {
 	// get namespace
-	var namespace *servicebus.Namespace
-	var err error
-	if s.podIdentity == "" || s.podIdentity == kedav1alpha1.PodIdentityProviderNone {
-		namespace, err = servicebus.NewNamespace(servicebus.NamespaceWithConnectionString(s.metadata.connection))
-		if err != nil {
-			return -1, err
-		}
-	} else if s.podIdentity == kedav1alpha1.PodIdentityProviderAzure {
-		namespace, err = servicebus.NewNamespace()
-		if err != nil {
-			return -1, err
-		}
-		namespace.TokenProvider = azureTokenProvider{
-			httpClient: s.httpClient,
-		}
-		namespace.Name = s.metadata.namespace
+	namespace, err := s.getServiceBusNamespace()
+	if err != nil {
+		return -1, err
 	}
-
 	// switch case for queue vs topic here
 	switch s.metadata.entityType {
 	case queue:
@@ -234,6 +259,31 @@ func (s *azureServiceBusScaler) GetAzureServiceBusLength(ctx context.Context) (i
 	default:
 		return -1, fmt.Errorf("no entity type")
 	}
+}
+
+// Returns service bus namespace object
+func (s *azureServiceBusScaler) getServiceBusNamespace() (*servicebus.Namespace, error) {
+	var namespace *servicebus.Namespace
+	var err error
+
+	if s.podIdentity == "" || s.podIdentity == kedav1alpha1.PodIdentityProviderNone {
+		namespace, err = servicebus.NewNamespace(servicebus.NamespaceWithConnectionString(s.metadata.connection))
+		if err != nil {
+			return namespace, err
+		}
+	} else if s.podIdentity == kedav1alpha1.PodIdentityProviderAzure {
+		namespace, err = servicebus.NewNamespace()
+		if err != nil {
+			return namespace, err
+		}
+		namespace.TokenProvider = azureTokenProvider{
+			httpClient: s.httpClient,
+		}
+		namespace.Name = s.metadata.namespace
+	}
+
+	namespace.Suffix = s.metadata.endpointSuffix
+	return namespace, nil
 }
 
 func getQueueEntityFromNamespace(ctx context.Context, ns *servicebus.Namespace, queueName string) (int32, error) {

@@ -1,5 +1,21 @@
 package scalers
 
+/*
+Copyright 2021 The KEDA Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 import (
 	"context"
 	"errors"
@@ -17,7 +33,7 @@ import (
 	"k8s.io/metrics/pkg/apis/external_metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/kedacore/keda/v2/api/v1alpha1"
+	"github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	"github.com/kedacore/keda/v2/pkg/scalers/azure"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
@@ -28,6 +44,7 @@ const (
 	thresholdMetricName             = "unprocessedEventThreshold"
 	defaultEventHubConsumerGroup    = "$Default"
 	defaultBlobContainer            = ""
+	defaultCheckpointStrategy       = ""
 )
 
 var eventhubLog = logf.Log.WithName("azure_eventhub_scaler")
@@ -41,6 +58,7 @@ type azureEventHubScaler struct {
 type eventHubMetadata struct {
 	eventHubInfo azure.EventHubInfo
 	threshold    int64
+	scalerIndex  int
 }
 
 // NewAzureEventHubScaler creates a new scaler for eventHub
@@ -93,6 +111,11 @@ func parseAzureEventHubMetadata(config *ScalerConfig) (*eventHubMetadata, error)
 		meta.eventHubInfo.EventHubConsumerGroup = val
 	}
 
+	meta.eventHubInfo.CheckpointStrategy = defaultCheckpointStrategy
+	if val, ok := config.TriggerMetadata["checkpointStrategy"]; ok {
+		meta.eventHubInfo.CheckpointStrategy = val
+	}
+
 	meta.eventHubInfo.BlobContainer = defaultBlobContainer
 	if val, ok := config.TriggerMetadata["blobContainer"]; ok {
 		meta.eventHubInfo.BlobContainer = val
@@ -130,6 +153,8 @@ func parseAzureEventHubMetadata(config *ScalerConfig) (*eventHubMetadata, error)
 		}
 	}
 
+	meta.scalerIndex = config.ScalerIndex
+
 	return &meta, nil
 }
 
@@ -145,7 +170,7 @@ func (scaler *azureEventHubScaler) GetUnprocessedEventCountInPartition(ctx conte
 		// if blob not found return the total partition event count
 		err = errors.Unwrap(err)
 		if stErr, ok := err.(azblob.StorageError); ok {
-			if stErr.ServiceCode() == azblob.ServiceCodeBlobNotFound {
+			if stErr.ServiceCode() == azblob.ServiceCodeBlobNotFound || stErr.ServiceCode() == azblob.ServiceCodeContainerNotFound {
 				return GetUnprocessedEventCountWithoutCheckpoint(partitionInfo), azure.Checkpoint{}, nil
 			}
 		}
@@ -226,11 +251,11 @@ func (scaler *azureEventHubScaler) IsActive(ctx context.Context) (bool, error) {
 }
 
 // GetMetricSpecForScaling returns metric spec
-func (scaler *azureEventHubScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (scaler *azureEventHubScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	targetMetricVal := resource.NewQuantity(scaler.metadata.threshold, resource.DecimalSI)
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", "azure-eventhub", scaler.metadata.eventHubInfo.EventHubConnection, scaler.metadata.eventHubInfo.EventHubConsumerGroup)),
+			Name: GenerateMetricNameWithIndex(scaler.metadata.scalerIndex, kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", "azure-eventhub", scaler.metadata.eventHubInfo.EventHubConnection, scaler.metadata.eventHubInfo.EventHubConsumerGroup))),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,
@@ -294,7 +319,7 @@ func getTotalLagRelatedToPartitionAmount(unprocessedEventsCount int64, partition
 }
 
 // Close closes Azure Event Hub Scaler
-func (scaler *azureEventHubScaler) Close() error {
+func (scaler *azureEventHubScaler) Close(context.Context) error {
 	if scaler.client != nil {
 		err := scaler.client.Close(context.TODO())
 		if err != nil {

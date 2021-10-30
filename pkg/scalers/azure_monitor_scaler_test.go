@@ -1,9 +1,26 @@
+/*
+Copyright 2021 The KEDA Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package scalers
 
 import (
+	"context"
 	"testing"
 
-	kedav1alpha1 "github.com/kedacore/keda/v2/api/v1alpha1"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 )
 
 type parseAzMonitorMetadataTestData struct {
@@ -16,6 +33,7 @@ type parseAzMonitorMetadataTestData struct {
 
 type azMonitorMetricIdentifier struct {
 	metadataTestData *parseAzMonitorMetadataTestData
+	scalerIndex      int
 	name             string
 }
 
@@ -28,7 +46,7 @@ var testParseAzMonitorMetadata = []parseAzMonitorMetadataTestData{
 	// nothing passed
 	{map[string]string{}, true, map[string]string{}, map[string]string{}, ""},
 	// properly formed
-	{map[string]string{"resourceURI": "test/resource/uri", "tenantId": "123", "subscriptionId": "456", "resourceGroupName": "test", "metricName": "metric", "metricAggregationInterval": "0:15:0", "metricAggregationType": "Average", "activeDirectoryClientId": "CLIENT_ID", "activeDirectoryClientPasswordFromEnv": "CLIENT_PASSWORD", "targetValue": "5"}, false, testAzMonitorResolvedEnv, map[string]string{}, ""},
+	{map[string]string{"resourceURI": "test/resource/uri", "tenantId": "123", "subscriptionId": "456", "resourceGroupName": "test", "metricName": "metric", "metricAggregationInterval": "0:15:0", "metricAggregationType": "Average", "activeDirectoryClientId": "CLIENT_ID", "activeDirectoryClientPasswordFromEnv": "CLIENT_PASSWORD", "targetValue": "5", "metricNamespace": "namespace"}, false, testAzMonitorResolvedEnv, map[string]string{}, ""},
 	// no optional parameters
 	{map[string]string{"resourceURI": "test/resource/uri", "tenantId": "123", "subscriptionId": "456", "resourceGroupName": "test", "metricName": "metric", "metricAggregationType": "Average", "activeDirectoryClientId": "CLIENT_ID", "activeDirectoryClientPasswordFromEnv": "CLIENT_PASSWORD", "targetValue": "5"}, false, testAzMonitorResolvedEnv, map[string]string{}, ""},
 	// incorrectly formatted resourceURI
@@ -64,7 +82,8 @@ var testParseAzMonitorMetadata = []parseAzMonitorMetadataTestData{
 }
 
 var azMonitorMetricIdentifiers = []azMonitorMetricIdentifier{
-	{&testParseAzMonitorMetadata[1], "azure-monitor-test-resource-uri-test-metric"},
+	{&testParseAzMonitorMetadata[1], 0, "s0-azure-monitor-test-resource-uri-test-metric"},
+	{&testParseAzMonitorMetadata[1], 1, "s1-azure-monitor-test-resource-uri-test-metric"},
 }
 
 func TestAzMonitorParseMetadata(t *testing.T) {
@@ -81,13 +100,13 @@ func TestAzMonitorParseMetadata(t *testing.T) {
 
 func TestAzMonitorGetMetricSpecForScaling(t *testing.T) {
 	for _, testData := range azMonitorMetricIdentifiers {
-		meta, err := parseAzureMonitorMetadata(&ScalerConfig{TriggerMetadata: testData.metadataTestData.metadata, ResolvedEnv: testData.metadataTestData.resolvedEnv, AuthParams: testData.metadataTestData.authParams, PodIdentity: testData.metadataTestData.podIdentity})
+		meta, err := parseAzureMonitorMetadata(&ScalerConfig{TriggerMetadata: testData.metadataTestData.metadata, ResolvedEnv: testData.metadataTestData.resolvedEnv, AuthParams: testData.metadataTestData.authParams, PodIdentity: testData.metadataTestData.podIdentity, ScalerIndex: testData.scalerIndex})
 		if err != nil {
 			t.Fatal("Could not parse metadata:", err)
 		}
 		mockAzMonitorScaler := azureMonitorScaler{meta, testData.metadataTestData.podIdentity}
 
-		metricSpec := mockAzMonitorScaler.GetMetricSpecForScaling()
+		metricSpec := mockAzMonitorScaler.GetMetricSpecForScaling(context.Background())
 		metricName := metricSpec[0].External.Metric.Name
 		if metricName != testData.name {
 			t.Error("Wrong External metric source name:", metricName)

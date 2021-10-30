@@ -2,6 +2,7 @@ package scalers
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -28,7 +29,9 @@ type influxDBMetadata struct {
 	organizationName string
 	query            string
 	serverURL        string
+	unsafeSsL        bool
 	thresholdValue   float64
+	scalerIndex      int
 }
 
 var influxDBLog = logf.Log.WithName("influxdb_scaler")
@@ -41,7 +44,13 @@ func NewInfluxDBScaler(config *ScalerConfig) (Scaler, error) {
 	}
 
 	influxDBLog.Info("starting up influxdb client")
-
+	// In case unsafeSsL is enabled.
+	if meta.unsafeSsL {
+		return &influxDBScaler{
+			client:   influxdb2.NewClientWithOptions(meta.serverURL, meta.authToken, influxdb2.DefaultOptions().SetTLSConfig(&tls.Config{InsecureSkipVerify: true})),
+			metadata: meta,
+		}, nil
+	}
 	return &influxDBScaler{
 		client:   influxdb2.NewClient(meta.serverURL, meta.authToken),
 		metadata: meta,
@@ -55,6 +64,7 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 	var organizationName string
 	var query string
 	var serverURL string
+	var unsafeSsL bool
 	var thresholdValue float64
 
 	val, ok := config.TriggerMetadata["authToken"]
@@ -67,6 +77,8 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 		} else {
 			return nil, fmt.Errorf("no auth token given")
 		}
+	case config.AuthParams["authToken"] != "":
+		authToken = config.AuthParams["authToken"]
 	default:
 		return nil, fmt.Errorf("no auth token given")
 	}
@@ -81,6 +93,8 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 		} else {
 			return nil, fmt.Errorf("no organization name given")
 		}
+	case config.AuthParams["organizationName"] != "":
+		organizationName = config.AuthParams["organizationName"]
 	default:
 		return nil, fmt.Errorf("no organization name given")
 	}
@@ -92,6 +106,8 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 	}
 
 	if val, ok := config.TriggerMetadata["serverURL"]; ok {
+		serverURL = val
+	} else if val, ok := config.AuthParams["serverURL"]; ok {
 		serverURL = val
 	} else {
 		return nil, fmt.Errorf("no server url given")
@@ -113,13 +129,21 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 	}
 
 	if val, ok := config.TriggerMetadata["thresholdValue"]; ok {
-		value, err := strconv.ParseFloat(val, 10)
+		value, err := strconv.ParseFloat(val, 64)
 		if err != nil {
 			return nil, fmt.Errorf("thresholdValue: failed to parse thresholdValue length %s", err.Error())
 		}
 		thresholdValue = value
 	} else {
 		return nil, fmt.Errorf("no threshold value given")
+	}
+	unsafeSsL = false
+	if val, ok := config.TriggerMetadata["unsafeSsL"]; ok {
+		parsedVal, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing unsafeSsL: %s", err)
+		}
+		unsafeSsL = parsedVal
 	}
 
 	return &influxDBMetadata{
@@ -129,6 +153,8 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 		query:            query,
 		serverURL:        serverURL,
 		thresholdValue:   thresholdValue,
+		unsafeSsL:        unsafeSsL,
+		scalerIndex:      config.ScalerIndex,
 	}, nil
 }
 
@@ -136,7 +162,7 @@ func parseInfluxDBMetadata(config *ScalerConfig) (*influxDBMetadata, error) {
 func (s *influxDBScaler) IsActive(ctx context.Context) (bool, error) {
 	queryAPI := s.client.QueryAPI(s.metadata.organizationName)
 
-	value, err := queryInfluxDB(queryAPI, s.metadata.query)
+	value, err := queryInfluxDB(ctx, queryAPI, s.metadata.query)
 	if err != nil {
 		return false, err
 	}
@@ -145,7 +171,7 @@ func (s *influxDBScaler) IsActive(ctx context.Context) (bool, error) {
 }
 
 // Close closes the connection of the client to the server
-func (s *influxDBScaler) Close() error {
+func (s *influxDBScaler) Close(context.Context) error {
 	s.client.Close()
 	return nil
 }
@@ -153,8 +179,8 @@ func (s *influxDBScaler) Close() error {
 // queryInfluxDB runs the query against the associated influxdb database
 // there is an implicit assumption here that the first value returned from the iterator
 // will be the value of interest
-func queryInfluxDB(queryAPI api.QueryAPI, query string) (float64, error) {
-	result, err := queryAPI.Query(context.Background(), query)
+func queryInfluxDB(ctx context.Context, queryAPI api.QueryAPI, query string) (float64, error) {
+	result, err := queryAPI.Query(ctx, query)
 	if err != nil {
 		return 0, err
 	}
@@ -164,12 +190,14 @@ func queryInfluxDB(queryAPI api.QueryAPI, query string) (float64, error) {
 		return 0, fmt.Errorf("no results found from query")
 	}
 
-	val, ok := result.Record().Value().(float64)
-	if !ok {
-		return 0, fmt.Errorf("value could not be parsed into a float")
+	switch valRaw := result.Record().Value().(type) {
+	case float64:
+		return valRaw, nil
+	case int64:
+		return float64(valRaw), nil
+	default:
+		return 0, fmt.Errorf("value of type %T could not be converted into a float", valRaw)
 	}
-
-	return val, nil
 }
 
 // GetMetrics connects to influxdb via the client and returns a value based on the query
@@ -177,7 +205,7 @@ func (s *influxDBScaler) GetMetrics(ctx context.Context, metricName string, metr
 	// Grab QueryAPI to make queries to influxdb instance
 	queryAPI := s.client.QueryAPI(s.metadata.organizationName)
 
-	value, err := queryInfluxDB(queryAPI, s.metadata.query)
+	value, err := queryInfluxDB(ctx, queryAPI, s.metadata.query)
 	if err != nil {
 		return []external_metrics.ExternalMetricValue{}, err
 	}
@@ -192,11 +220,11 @@ func (s *influxDBScaler) GetMetrics(ctx context.Context, metricName string, metr
 }
 
 // GetMetricSpecForScaling returns the metric spec for the Horizontal Pod Autoscaler
-func (s *influxDBScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *influxDBScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	targetMetricValue := resource.NewQuantity(int64(s.metadata.thresholdValue), resource.DecimalSI)
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: s.metadata.metricName,
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, s.metadata.metricName),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,

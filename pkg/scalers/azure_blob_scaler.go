@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KEDA Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package scalers
 
 import (
@@ -6,8 +22,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/kedacore/keda/v2/pkg/scalers/azure"
-
 	v2beta2 "k8s.io/api/autoscaling/v2beta2"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,7 +29,8 @@ import (
 	"k8s.io/metrics/pkg/apis/external_metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	kedav1alpha1 "github.com/kedacore/keda/v2/api/v1alpha1"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	"github.com/kedacore/keda/v2/pkg/scalers/azure"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -39,6 +54,9 @@ type azureBlobMetadata struct {
 	blobPrefix        string
 	connection        string
 	accountName       string
+	metricName        string
+	endpointSuffix    string
+	scalerIndex       int
 }
 
 var azureBlobLog = logf.Log.WithName("azure_blob_scaler")
@@ -87,9 +105,26 @@ func parseAzureBlobMetadata(config *ScalerConfig) (*azureBlobMetadata, kedav1alp
 		meta.blobPrefix = val + meta.blobDelimiter
 	}
 
+	endpointSuffix, err := azure.ParseAzureStorageEndpointSuffix(config.TriggerMetadata, azure.BlobEndpoint)
+	if err != nil {
+		return nil, "", err
+	}
+
+	meta.endpointSuffix = endpointSuffix
+
 	// before triggerAuthentication CRD, pod identity was configured using this property
 	if val, ok := config.TriggerMetadata["useAAdPodIdentity"]; ok && config.PodIdentity == "" && val == "true" {
 		config.PodIdentity = kedav1alpha1.PodIdentityProviderAzure
+	}
+
+	if val, ok := config.TriggerMetadata["metricName"]; ok {
+		meta.metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-blob", val))
+	} else {
+		if meta.blobPrefix != "" {
+			meta.metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s-%s", "azure-blob", meta.blobContainerName, meta.blobPrefix))
+		} else {
+			meta.metricName = kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-blob", meta.blobContainerName))
+		}
 	}
 
 	// If the Use AAD Pod Identity is not present, or set to "none"
@@ -118,6 +153,8 @@ func parseAzureBlobMetadata(config *ScalerConfig) (*azureBlobMetadata, kedav1alp
 		return nil, "", fmt.Errorf("pod identity %s not supported for azure storage blobs", config.PodIdentity)
 	}
 
+	meta.scalerIndex = config.ScalerIndex
+
 	return &meta, config.PodIdentity, nil
 }
 
@@ -132,6 +169,7 @@ func (s *azureBlobScaler) IsActive(ctx context.Context) (bool, error) {
 		s.metadata.accountName,
 		s.metadata.blobDelimiter,
 		s.metadata.blobPrefix,
+		s.metadata.endpointSuffix,
 	)
 
 	if err != nil {
@@ -142,15 +180,15 @@ func (s *azureBlobScaler) IsActive(ctx context.Context) (bool, error) {
 	return length > 0, nil
 }
 
-func (s *azureBlobScaler) Close() error {
+func (s *azureBlobScaler) Close(context.Context) error {
 	return nil
 }
 
-func (s *azureBlobScaler) GetMetricSpecForScaling() []v2beta2.MetricSpec {
+func (s *azureBlobScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
 	targetBlobCount := resource.NewQuantity(int64(s.metadata.targetBlobCount), resource.DecimalSI)
 	externalMetric := &v2beta2.ExternalMetricSource{
 		Metric: v2beta2.MetricIdentifier{
-			Name: kedautil.NormalizeString(fmt.Sprintf("%s-%s", "azure-blob", s.metadata.blobContainerName)),
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, s.metadata.metricName),
 		},
 		Target: v2beta2.MetricTarget{
 			Type:         v2beta2.AverageValueMetricType,
@@ -172,6 +210,7 @@ func (s *azureBlobScaler) GetMetrics(ctx context.Context, metricName string, met
 		s.metadata.accountName,
 		s.metadata.blobDelimiter,
 		s.metadata.blobPrefix,
+		s.metadata.endpointSuffix,
 	)
 
 	if err != nil {
