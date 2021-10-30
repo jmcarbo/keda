@@ -3,7 +3,7 @@ module github.com/kedacore/keda/v2
 go 1.15
 
 require (
-	cloud.google.com/go v0.79.0
+	cloud.google.com/go/monitoring v1.1.0
 	github.com/Azure/azure-amqp-common-go/v3 v3.1.0
 	github.com/Azure/azure-event-hubs-go/v3 v3.3.7
 	github.com/Azure/azure-sdk-for-go v52.4.0+incompatible
@@ -21,9 +21,9 @@ require (
 	github.com/go-openapi/spec v0.20.3
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/go-sql-driver/mysql v1.5.0
-	github.com/golang/mock v1.5.0
-	github.com/golang/protobuf v1.4.3
-	github.com/google/go-cmp v0.5.5
+	github.com/golang/mock v1.6.0
+	github.com/golang/protobuf v1.5.2
+	github.com/google/go-cmp v0.5.6
 	github.com/hashicorp/go-multierror v1.1.0 // indirect
 	github.com/hashicorp/go-retryablehttp v0.6.6 // indirect
 	github.com/hashicorp/vault/api v1.0.4
@@ -43,9 +43,9 @@ require (
 	github.com/tidwall/gjson v1.6.8
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c
 	go.mongodb.org/mongo-driver v1.5.0
-	google.golang.org/api v0.42.0
-	google.golang.org/genproto v0.0.0-20210315173758-2651cd453018
-	google.golang.org/grpc v1.36.0
+	google.golang.org/api v0.58.0
+	google.golang.org/genproto v0.0.0-20211018162055-cf77aa76bad2
+	google.golang.org/grpc v1.40.0
 	k8s.io/api v0.20.4
 	k8s.io/apimachinery v0.20.4
 	k8s.io/apiserver v0.20.4
