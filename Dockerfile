@@ -33,6 +33,7 @@ RUN VERSION=${BUILD_VERSION} GIT_COMMIT=${GIT_COMMIT} GIT_VERSION=${GIT_VERSION}
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
+LABEL org.opencontainers.image.source https://github.com/jmcarbo/keda
 WORKDIR /
 COPY --from=builder /workspace/bin/keda .
 USER nonroot:nonroot
