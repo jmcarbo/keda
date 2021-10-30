@@ -42,4 +42,4 @@ jobs:
         name: Build docker images
         run: |
           docker buildx build --push --platform linux/amd64,linux/arm64 -t ghcr.io/jmcarbo/keda:${{ steps.get_version.outputs.VERSION }} --file Dockerfile .
-          docker buildx build --push --platform linux/amd64,linux/arm64 -t ghcr.io/jmcarbo/keda-metrics-apiserver:${{ steps.get_version.outputs.VERSION }} --file Dockerfile.adapter .
+          #docker buildx build --push --platform linux/amd64,linux/arm64 -t ghcr.io/jmcarbo/keda-metrics-apiserver:${{ steps.get_version.outputs.VERSION }} --file Dockerfile.adapter .
