@@ -1,5 +1,6 @@
 # Build the manager binary
 FROM golang:1.16.9 as builder
+LABEL org.opencontainers.image.source https://github.com/jmcarbo/keda
 
 ARG BUILD_VERSION=main
 ARG TARGETARCH
